@@ -557,34 +557,44 @@ def get_truststore():
 @api_blueprint.route("/api/map_state")
 @auth_required()
 def get_map_state():
-    """Gets the latest data to be displayed on the web UI's map"""
+    """Gets the latest data to be displayed on the web UI's map.
+
+    Audit 2026-05-08 finding H-B5: was loading ALL EUDs (no recency filter) on
+    every poll, then triggering lazy-load per row in `to_json()` — linear
+    growth with EUD history; the polling map page bricks once you've ever had
+    a few hundred EUDs through. Now:
+      * filter EUDs by `last_event_time >= now - OTS_MAP_STATE_EUD_HOURS`
+        (default 24h; configurable so historical-recall pages can override)
+      * everything else already filters on CoT.stale, that part is fine
+      * compute `now` once instead of per-query (was 4 calls), small win
+    """
     try:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        eud_recency_hours = app.config.get("OTS_MAP_STATE_EUD_HOURS", 24)
+        eud_cutoff = now - datetime.timedelta(hours=eud_recency_hours)
+
         results = {"euds": [], "markers": [], "rb_lines": [], "casevacs": []}
 
-        euds = db.session.execute(db.session.query(EUD)).all()
+        euds = db.session.execute(
+            db.session.query(EUD).filter(EUD.last_event_time >= eud_cutoff)
+        ).all()
         for eud in euds:
             results["euds"].append(eud[0].to_json())
 
         markers = db.session.execute(
-            db.session.query(Marker)
-            .join(CoT)
-            .filter(CoT.stale >= datetime.datetime.now(datetime.timezone.utc))
+            db.session.query(Marker).join(CoT).filter(CoT.stale >= now)
         ).all()
         for marker in markers:
             results["markers"].append(marker[0].to_json())
 
         rb_lines = db.session.execute(
-            db.session.query(RBLine)
-            .join(CoT)
-            .filter(CoT.stale >= datetime.datetime.now(datetime.timezone.utc))
+            db.session.query(RBLine).join(CoT).filter(CoT.stale >= now)
         ).all()
         for rb_line in rb_lines:
             results["rb_lines"].append(rb_line[0].to_json())
 
         casevacs = db.session.execute(
-            db.session.query(CasEvac)
-            .join(CoT)
-            .filter(CoT.stale >= datetime.datetime.now(datetime.timezone.utc))
+            db.session.query(CasEvac).join(CoT).filter(CoT.stale >= now)
         ).all()
         for casevac in casevacs:
             results["casevacs"].append(casevac[0].to_json())
@@ -625,20 +635,23 @@ def get_settings():
 @api_blueprint.route('/api/chatrooms', methods=['GET'])
 @auth_required()
 def get_chatrooms():
-    """List all chatrooms/channels the server knows about."""
+    """List all chatrooms/channels the server knows about with their message
+    counts. Single GROUP BY query — was N+1 (one COUNT(*) per chatroom in a
+    Python for-loop). Audit 2026-05-08 finding H-B6."""
     try:
-        query = db.session.query(Chatroom)
-        chatrooms = db.session.execute(query).all()
+        from sqlalchemy import func
+        rows = db.session.query(
+            Chatroom,
+            func.count(GeoChat.uid).label('message_count')
+        ).outerjoin(
+            GeoChat, GeoChat.chatroom_id == Chatroom.id
+        ).group_by(Chatroom.id).all()
 
         results = []
-        for room in chatrooms:
-            room_data = room[0].to_json()
-            # Add message count for each room
-            msg_count = db.session.query(GeoChat).filter(
-                GeoChat.chatroom_id == room[0].id
-            ).count()
-            room_data['message_count'] = msg_count
-            results.append(room_data)
+        for chatroom, message_count in rows:
+            data = chatroom.to_json()
+            data['message_count'] = message_count
+            results.append(data)
 
         return jsonify({'success': True, 'chatrooms': results})
     except BaseException as e:
@@ -821,22 +834,14 @@ def send_geochat():
 
         logger.info(f"Chat message saved: [{chatroom_id}] {sender_callsign}: {message[:50]}")
 
-        # Publish to RabbitMQ for real-time delivery to TAK clients
+        # Publish to RabbitMQ for real-time delivery to TAK clients via the
+        # singleton AMQP publisher (was a per-call BlockingConnection — chat
+        # send took ~80ms in connection overhead alone). Audit H-B4.
         try:
             import json as _json
+            from opentakserver.amqp_publisher import publish as _amqp_publish
             wrapped = _json.dumps({'uid': sender_uid, 'cot': cot_xml})
-            connection = pika.BlockingConnection(
-                pika.ConnectionParameters(
-                    host=app.config.get('OTS_RABBITMQ_SERVER_ADDRESS', 'rabbitmq'),
-                    credentials=pika.PlainCredentials(
-                        app.config.get('OTS_RABBITMQ_USERNAME', 'guest'),
-                        app.config.get('OTS_RABBITMQ_PASSWORD', 'guest')
-                    )
-                )
-            )
-            channel = connection.channel()
-            channel.basic_publish(exchange='chatrooms', routing_key=chatroom_id, body=wrapped)
-            connection.close()
+            _amqp_publish(exchange='chatrooms', routing_key=chatroom_id, body=wrapped)
         except Exception as e:
             logger.error(f"RabbitMQ publish failed (message saved to DB): {e}")
 
@@ -901,17 +906,9 @@ def send_geochat():
                 user_low24 = int(_hl.sha256(current_user.username.encode()).hexdigest()[:6], 16) & 0x00FFFFFF
                 from_id = 0xFE000000 | user_low24
 
-                # Single AMQP connection for the whole fan-out.
-                mesh_connection = pika.BlockingConnection(
-                    pika.ConnectionParameters(
-                        host=app.config.get('OTS_RABBITMQ_SERVER_ADDRESS', 'rabbitmq'),
-                        credentials=pika.PlainCredentials(
-                            app.config.get('OTS_RABBITMQ_USERNAME', 'guest'),
-                            app.config.get('OTS_RABBITMQ_PASSWORD', 'guest')
-                        )
-                    )
-                )
-                mesh_ch = mesh_connection.channel()
+                # Use the singleton AMQP publisher — was a per-call BlockingConnection
+                # opened just for the mesh fan-out. Audit H-B4.
+                from opentakserver.amqp_publisher import publish as _amqp_publish
 
                 for target_channel in mesh_targets:
                     ch_idx = channel_index_map.get(target_channel, 1)
@@ -936,13 +933,12 @@ def send_geochat():
                     service_envelope.gateway_id = "!fffe0001"
 
                     routing_key = f"{mesh_topic}.2.e.{target_channel}.outgoing"
-                    mesh_ch.basic_publish(
+                    _amqp_publish(
                         exchange='amq.topic',
                         routing_key=routing_key,
-                        body=service_envelope.SerializeToString()
+                        body=service_envelope.SerializeToString(),
                     )
                     logger.info(f"Published text message to Meshtastic: {routing_key}")
-                mesh_connection.close()
             except ImportError:
                 logger.warning("Meshtastic protobuf library not available - message not sent to mesh")
             except Exception as e:
