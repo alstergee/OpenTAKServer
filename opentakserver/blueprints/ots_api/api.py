@@ -517,6 +517,27 @@ def get_euds():
     return paginate(query, EUD)
 
 
+@api_blueprint.route("/api/eud/<uid>", methods=["DELETE"])
+@auth_required()
+def delete_eud(uid):
+    """Delete an EUD and let SQLAlchemy cascade through points/CoT/etc."""
+    if not current_user.has_role("administrator"):
+        return jsonify({"success": False, "error": "Administrator role required"}), 403
+    eud = db.session.query(EUD).filter_by(uid=uid).first()
+    if not eud:
+        return jsonify({"success": False, "error": f"EUD not found: {uid}"}), 404
+    try:
+        callsign = eud.callsign
+        db.session.delete(eud)
+        db.session.commit()
+        logger.info(f"Deleted EUD {uid} ({callsign}) by {current_user.username}")
+        return jsonify({"success": True, "uid": uid, "callsign": callsign})
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Failed to delete EUD {uid}: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @api_blueprint.route("/api/truststore")
 def get_truststore():
     """Downloads the server's truststore with no authentication required."""
