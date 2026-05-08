@@ -539,8 +539,12 @@ def delete_eud(uid):
 
 
 @api_blueprint.route("/api/truststore")
+@auth_required()
 def get_truststore():
-    """Downloads the server's truststore with no authentication required."""
+    """Downloads the server's truststore — gated to authenticated users.
+    Was public; the audit (2026-05-08, finding C1) flagged this as a CA-bundle
+    information leak. ATAK clients fetching this for enrollment have a session
+    cookie by the time they reach this endpoint, so authed access is fine."""
     filename = f"truststore_root_{urlparse(request.url_root).hostname}.p12"
     return send_from_directory(
         app.config.get("OTS_CA_FOLDER"),
@@ -957,8 +961,13 @@ def send_geochat():
 
 
 @api_blueprint.route('/api/gateway/health', methods=['GET'])
+@auth_required()
 def get_gateway_health():
-    """Gateway health from monitor cron. Public — read-only status data."""
+    """Gateway health from monitor cron — authed only. Was public; the audit
+    (2026-05-08, finding C2) flagged the response payload (container fleet,
+    MQTT client count, last-chat timestamp) as fingerprinting/scheduling info
+    a public attacker shouldn't have. The dashboard's chat-inject panel calls
+    this with credentials anyway, so gating is transparent."""
     import sys, traceback as _tb
     try:
         stats_path = "/app/ots/gateway-stats.json"

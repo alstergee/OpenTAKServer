@@ -130,12 +130,30 @@ def init_extensions(app):
     ca = CertificateAuthority(logger, app)
     ca.create_ca()
 
+    # CORS allow-list. Was `origins="*"` for /api, /Marti, AND /* with
+    # supports_credentials=True — Flask-CORS reflects the request Origin in
+    # that combo, so any malicious site visited by a logged-in admin could
+    # perform credentialed cross-site requests against this API. Audit
+    # 2026-05-08 finding C3.
+    #
+    # Configured allow-list reads from app.config so deployments can add
+    # their own origins (e.g. mobile-app webview, secondary FQDNs) without
+    # editing source. Defaults to the canonical OTS_FQDN if the deployment
+    # doesn't override.
+    _cors_origins = app.config.get("OTS_CORS_ORIGINS")
+    if not _cors_origins:
+        fqdn = app.config.get("OTS_FQDN", "")
+        # Common access shapes for the same deployment: HTTPS on the
+        # canonical name (browser typed URL) and the dashboard port (8180).
+        _cors_origins = [
+            f"https://{fqdn}",
+            f"https://{fqdn}:8180",
+        ] if fqdn else []
     cors = CORS(
         app,
         resources={
-            r"/api/*": {"origins": "*"},
-            r"/Marti/*": {"origins": "*"},
-            r"/*": {"origins": "*"},
+            r"/api/*":   {"origins": _cors_origins},
+            r"/Marti/*": {"origins": _cors_origins},
         },
         supports_credentials=True,
     )
