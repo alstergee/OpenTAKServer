@@ -703,6 +703,11 @@ def send_geochat():
         chatroom_id = data.get('chatroom_id', 'All Chat Rooms')
         message = data.get('message', '')
         to_meshtastic = data.get('to_meshtastic', True)
+        # broadcast_channels: list of mesh channel names to fan out the SAME
+        # message to. Used by the ALL tab in MeshChat. We still save ONE DB
+        # row (with chatroom_id = "ALL"), but publish one mesh packet per
+        # listed channel so radios on each channel pick it up.
+        broadcast_channels = data.get('broadcast_channels') or []
 
         if not message:
             return jsonify({'success': False, 'error': 'Message cannot be empty'}), 400
@@ -810,7 +815,9 @@ def send_geochat():
         except Exception as e:
             logger.error(f"RabbitMQ publish failed (message saved to DB): {e}")
 
-        # If sending to Meshtastic, also publish to mesh channels
+        # If sending to Meshtastic, also publish to mesh channels.
+        # In broadcast mode, mesh_targets is the list from the request;
+        # otherwise it's just [the chatroom's matching mesh channel].
         if to_meshtastic and app.config.get('OTS_ENABLE_MESHTASTIC', False):
             try:
                 from meshtastic.protobuf import mesh_pb2, portnums_pb2, mqtt_pb2
@@ -820,14 +827,22 @@ def send_geochat():
                 # Map common chatroom names to Meshtastic channel names
                 channel_map = {
                     'All Chat Rooms': 'ALLCALL',
+                    'ALL': 'ALLCALL',  # ALL is the synthetic broadcast tab
                     'ALLCALL': 'ALLCALL',
                     'SECURITY': 'SECURITY',
                     'PRODUCTION': 'PRODUCTION',
                     'STAFF': 'STAFF',
                 }
-                mesh_channel = channel_map.get(chatroom_id, 'ALLCALL')
+                # If broadcast_channels was passed, fan out to all of them.
+                # Otherwise just publish to the chatroom's matching mesh channel.
+                mesh_targets = broadcast_channels if broadcast_channels else [
+                    channel_map.get(chatroom_id, 'ALLCALL')
+                ]
 
-                # Build Meshtastic protobuf for TEXT_MESSAGE_APP
+                # Build Meshtastic protobuf for TEXT_MESSAGE_APP (shared across
+                # all target channels — the per-channel Data is identical, only
+                # the MeshPacket.channel index and ServiceEnvelope.channel_id
+                # change per publish below).
                 pb_data = mesh_pb2.Data()
                 pb_data.portnum = portnums_pb2.TEXT_MESSAGE_APP
                 pb_data.payload = message.encode('utf-8')
@@ -838,53 +853,71 @@ def send_geochat():
                 channel_index_map = {
                     'ALLCALL': 1, 'SECURITY': 2, 'PRODUCTION': 3, 'STAFF': 4, 'PKI': 5,
                 }
-                ch_idx = channel_index_map.get(mesh_channel, 1)
 
-                # Generate a non-zero random packet_id (uint32) — Meshtastic firmware
-                # rejects packets with id=0 from MQTT-source.
-                import random as _rnd
-                pkt_id = _rnd.randint(1, 0xFFFFFFFF)
+                # The 5 silent-drop gates from Meshtastic firmware MQTT.cpp
+                # onReceiveProto (lines 66-156) — any one fails → silent drop, no log:
+                #
+                #   (1) Topic root must match chip's mqtt.root → OTS_MESHTASTIC_TOPIC.
+                #   (2) channel.downlink_enabled = true on the chip (chip-side flag).
+                #   (3) gateway_id MUST NOT equal chip's own node id (else "ignore
+                #       downlink we sent"). Use a fixed synthetic id, NEVER hash a
+                #       username because hashes can collide with real chip ids.
+                #   (4) packet.from MUST NOT equal chip's nodenum (isFromUs check).
+                #       Use the FE000000 reserved range with the low 24 bits derived
+                #       from the ATAK user — stable per-user, but firmly outside any
+                #       real chip's id space.
+                #   (5) hop_start AND hop_limit both >0 and <=7. hop_start=0 = drop
+                #       before any hop logic runs.
 
-                # Use a stable cloud node id (uint32) for 'from'. Hash the username so
-                # the same WebUI sender always shows up as the same mesh node id.
+                # packet.from in the FE000000/8 reserved range (gate 4) — stable
+                # per ATAK user, never collides with a real chip id.
                 import hashlib as _hl
-                from_id = int(_hl.sha256(current_user.username.encode()).hexdigest()[:8], 16) | 0x80000000
+                import random as _rnd
+                user_low24 = int(_hl.sha256(current_user.username.encode()).hexdigest()[:6], 16) & 0x00FFFFFF
+                from_id = 0xFE000000 | user_low24
 
-                mesh_packet = mesh_pb2.MeshPacket()
-                mesh_packet.decoded.CopyFrom(pb_data)
-                mesh_packet.to = 0xFFFFFFFF  # Broadcast
-                mesh_packet.want_ack = False
-                mesh_packet.id = pkt_id
-                setattr(mesh_packet, 'from', from_id)  # 'from' is reserved word, use setattr
-                mesh_packet.channel = ch_idx
-                mesh_packet.hop_limit = 7
-
-                service_envelope = mqtt_pb2.ServiceEnvelope()
-                service_envelope.packet.CopyFrom(mesh_packet)
-                service_envelope.channel_id = mesh_channel
-                # Use a real-looking gateway_id (8 hex chars, '!' prefix per Meshtastic
-                # convention). Some firmwares filter on this format.
-                service_envelope.gateway_id = f"!{from_id:08x}"
-
-                # Publish to Meshtastic outgoing topic via RabbitMQ
+                # Single AMQP connection for the whole fan-out.
                 mesh_connection = pika.BlockingConnection(
                     pika.ConnectionParameters(
                         host=app.config.get('OTS_RABBITMQ_SERVER_ADDRESS', 'rabbitmq'),
                         credentials=pika.PlainCredentials(
-                        app.config.get('OTS_RABBITMQ_USERNAME', 'guest'),
-                        app.config.get('OTS_RABBITMQ_PASSWORD', 'guest')
-                    )
+                            app.config.get('OTS_RABBITMQ_USERNAME', 'guest'),
+                            app.config.get('OTS_RABBITMQ_PASSWORD', 'guest')
+                        )
                     )
                 )
                 mesh_ch = mesh_connection.channel()
-                routing_key = f"{mesh_topic}.2.e.{mesh_channel}.outgoing"
-                mesh_ch.basic_publish(
-                    exchange='amq.topic',
-                    routing_key=routing_key,
-                    body=service_envelope.SerializeToString()
-                )
+
+                for target_channel in mesh_targets:
+                    ch_idx = channel_index_map.get(target_channel, 1)
+                    # Each publish gets a fresh random packet id — firmware drops id=0.
+                    pkt_id = _rnd.randint(1, 0xFFFFFFFF)
+
+                    mesh_packet = mesh_pb2.MeshPacket()
+                    mesh_packet.decoded.CopyFrom(pb_data)
+                    mesh_packet.to = 0xFFFFFFFF  # Broadcast
+                    mesh_packet.want_ack = False
+                    mesh_packet.id = pkt_id
+                    setattr(mesh_packet, 'from', from_id)  # 'from' is a Python reserved word
+                    mesh_packet.channel = ch_idx
+                    # Gate 5: BOTH hop_start and hop_limit must be set, non-zero, ≤7.
+                    mesh_packet.hop_start = 7
+                    mesh_packet.hop_limit = 7
+
+                    service_envelope = mqtt_pb2.ServiceEnvelope()
+                    service_envelope.packet.CopyFrom(mesh_packet)
+                    service_envelope.channel_id = target_channel
+                    # Gate 3: synthetic gateway_id, NEVER any real chip's id.
+                    service_envelope.gateway_id = "!fffe0001"
+
+                    routing_key = f"{mesh_topic}.2.e.{target_channel}.outgoing"
+                    mesh_ch.basic_publish(
+                        exchange='amq.topic',
+                        routing_key=routing_key,
+                        body=service_envelope.SerializeToString()
+                    )
+                    logger.info(f"Published text message to Meshtastic: {routing_key}")
                 mesh_connection.close()
-                logger.info(f"Published text message to Meshtastic: {routing_key}")
             except ImportError:
                 logger.warning("Meshtastic protobuf library not available - message not sent to mesh")
             except Exception as e:
