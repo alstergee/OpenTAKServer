@@ -240,6 +240,15 @@ def create_app(cli=True):
     app.config.from_object(DefaultConfig)
     setup_logging(app)
 
+    # Treat /api/foo and /api/foo/ as the same route. Flask's default behavior
+    # is to redirect the missing-slash form to the slashed form via Location
+    # header — but behind this proxy chain, request.url_root sometimes parses
+    # to an empty hostname (`https:///api/foo/`), which the browser then tries
+    # to dial as host="api" and fails with ERR_NAME_NOT_RESOLVED. Disabling
+    # strict_slashes makes Flask match either form directly, no redirect, no
+    # malformed Location.
+    app.url_map.strict_slashes = False
+
     if not cli:
         # Load config.yml if it exists
         if os.path.exists(os.path.join(app.config.get("OTS_DATA_FOLDER"), "config.yml")):
