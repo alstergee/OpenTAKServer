@@ -51,7 +51,12 @@ p = psutil.Process()
 def search(query, model, field):
     arg = request.args.get(field)
     if arg:
-        arg = bleach.clean(arg)
+        # bleach.clean() was removed here — bleach is for HTML sanitization,
+        # NOT SQL/equality. SQLAlchemy parameterizes the `==` comparison so
+        # there's no injection risk; the bleach call only mangled legit
+        # values containing '<', '>', '&' (e.g. callsigns "TM<2>"). Audit
+        # 2026-05-08 finding M-S4. Server-side rendering uses xml_escape
+        # (CoT XML) and React (UI) which both escape on output already.
         return query.where(getattr(model, field) == arg)
     return query
 
@@ -71,6 +76,21 @@ def paginate(query: db.Query, model=None):
         if model:
             sort_by = request.args.get("sort_by")
             sort_direction = request.args.get("sort_direction")
+            # Whitelist sort_by to actual table columns. Was getattr(model, x)
+            # for any user-supplied x — accepts relationships, dunder methods,
+            # private attrs, etc. Limited risk (sort would just behave oddly
+            # or error) but unbounded surface. Audit M-S5.
+            valid_columns = {c.key for c in model.__table__.columns}
+            if sort_by and sort_by not in valid_columns:
+                return (
+                    jsonify({
+                        "success": False,
+                        "error": gettext(
+                            "Invalid sort column: %(sort_by)s", sort_by=sort_by
+                        ),
+                    }),
+                    400,
+                )
             if sort_by and (sort_direction == "asc" or not sort_direction):
                 query = query.order_by(getattr(model, sort_by).asc())
             elif sort_by and sort_direction == "desc":
@@ -700,9 +720,9 @@ def get_geochat():
         ).order_by(GeoChat.timestamp.desc())
 
         if chatroom_id:
-            query = query.filter(GeoChat.chatroom_id == bleach.clean(chatroom_id))
+            query = query.filter(GeoChat.chatroom_id == chatroom_id)  # bleach removed — wrong tool, M-S4
         if sender_uid:
-            query = query.filter(GeoChat.sender_uid == bleach.clean(sender_uid))
+            query = query.filter(GeoChat.sender_uid == sender_uid)  # bleach removed — M-S4
 
         total = query.count()
         results = query.offset(offset).limit(limit).all()
