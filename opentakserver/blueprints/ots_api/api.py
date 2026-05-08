@@ -440,8 +440,25 @@ def query_points():
 def rabbitmq_auth(path):
     # https://github.com/rabbitmq/rabbitmq-server/tree/v3.13.x/deps/rabbitmq_auth_backend_http
 
-    # Only allow requests to this route from the RabbitMQ server
-    if request.remote_addr != app.config.get("OTS_RABBITMQ_SERVER_ADDRESS"):
+    # Only allow requests to this route from the RabbitMQ server. The original
+    # check compared `request.remote_addr` (always an IP) against
+    # OTS_RABBITMQ_SERVER_ADDRESS (typically a hostname like 'rabbitmq') —
+    # the comparison NEVER matched, so either every request was denied (auth
+    # broken) or, if config was set to an IP, ANY container on that IP could
+    # submit credentials. Audit 2026-05-08 finding C3 (IP/host comparison).
+    # Resolve the configured host to its IP set at request time and compare
+    # against that. socket.gethostbyname_ex returns (canonical, aliases, ips).
+    import socket as _socket
+    rabbit_host = app.config.get("OTS_RABBITMQ_SERVER_ADDRESS", "")
+    allowed_ips = set()
+    try:
+        # Direct IP literal also works (gethostbyname_ex echoes it back)
+        allowed_ips.update(_socket.gethostbyname_ex(rabbit_host)[2])
+    except Exception:
+        # Fall back to a plain string compare for environments where DNS is
+        # unavailable but config IS already an IP literal.
+        allowed_ips.add(rabbit_host)
+    if request.remote_addr not in allowed_ips:
         return "deny", 200
 
     username = bleach.clean(request.form.get("username"))
