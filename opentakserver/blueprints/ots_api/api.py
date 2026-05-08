@@ -6,6 +6,7 @@ import platform
 import traceback
 from shutil import copyfile
 from urllib.parse import urlparse
+from xml.sax.saxutils import escape as xml_escape, quoteattr as xml_quoteattr
 
 import bleach
 import pika
