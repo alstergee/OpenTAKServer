@@ -144,11 +144,15 @@ def init_extensions(app):
     socketio_logger = False
     if app.config.get("DEBUG"):
         socketio_logger = logger
+    rabbitmq_user = app.config.get("OTS_RABBITMQ_USERNAME", "guest")
+    rabbitmq_pass = app.config.get("OTS_RABBITMQ_PASSWORD", "guest")
+    rabbitmq_host = app.config.get("OTS_RABBITMQ_SERVER_ADDRESS", "rabbitmq")
     socketio.init_app(
         app,
         logger=socketio_logger,
-        ping_timeout=1,
-        message_queue="amqp://" + app.config.get("OTS_RABBITMQ_SERVER_ADDRESS"),
+        ping_timeout=60,
+        cors_allowed_origins="*",
+        message_queue=f"amqp://{rabbitmq_user}:{rabbitmq_pass}@{rabbitmq_host}",
     )
 
     rabbit_credentials = pika.PlainCredentials(
