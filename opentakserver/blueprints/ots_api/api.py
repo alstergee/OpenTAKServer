@@ -28,7 +28,9 @@ from opentakserver.models.Alert import Alert
 from opentakserver.models.APSchedulerJobs import APSchedulerJobs
 from opentakserver.models.CasEvac import CasEvac
 from opentakserver.models.Certificate import Certificate
+from opentakserver.models.Chatrooms import Chatroom
 from opentakserver.models.CoT import CoT
+from opentakserver.models.GeoChat import GeoChat
 from opentakserver.models.DataPackage import DataPackage
 from opentakserver.models.EUD import EUD
 from opentakserver.models.Group import Group
