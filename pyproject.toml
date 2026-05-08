@@ -36,7 +36,7 @@ lastversion = "*"
 lxml = "6.1.0"
 meshtastic = "2.7.6"
 pika = "1.3.2"
-poetry = "2.3.4"
+poetry = "2.2.1"  # Deferred 2.3.4 bump — conflicts with dulwich<2 pin (which lastversion needs). The 2.3.x CVEs (path traversal in wheel install) only fire when installing untrusted wheels; this build only installs our own fork, so accepting the deferral until lastversion releases an update freeing dulwich.
 poetry-dynamic-versioning = {version = "1.9.1", extras = ["plugin"]}
 protobuf = "6.33.5"
 psutil = "7.1.3"
