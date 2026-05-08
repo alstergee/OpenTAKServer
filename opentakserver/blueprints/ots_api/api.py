@@ -594,3 +594,367 @@ def get_settings():
     """
     url = urlparse(request.url_root).hostname
     return "OpenTAKServer_{},{},{},SSL".format(url, url, app.config.get("OTS_SSL_STREAMING_PORT"))
+@api_blueprint.route('/api/chatrooms', methods=['GET'])
+@auth_required()
+def get_chatrooms():
+    """List all chatrooms/channels the server knows about."""
+    try:
+        query = db.session.query(Chatroom)
+        chatrooms = db.session.execute(query).all()
+
+        results = []
+        for room in chatrooms:
+            room_data = room[0].to_json()
+            # Add message count for each room
+            msg_count = db.session.query(GeoChat).filter(
+                GeoChat.chatroom_id == room[0].id
+            ).count()
+            room_data['message_count'] = msg_count
+            results.append(room_data)
+
+        return jsonify({'success': True, 'chatrooms': results})
+    except BaseException as e:
+        logger.error(traceback.format_exc())
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@api_blueprint.route('/api/geochat', methods=['GET'])
+@auth_required()
+def get_geochat():
+    """
+    Get chat messages with optional filters.
+    Query params:
+      - chatroom_id: filter by chatroom (e.g., "All Chat Rooms")
+      - sender_uid: filter by sender
+      - limit: max messages to return (default 100)
+      - offset: pagination offset
+    """
+    try:
+        chatroom_id = request.args.get('chatroom_id')
+        sender_uid = request.args.get('sender_uid')
+        limit = min(int(request.args.get('limit', 100)), 500)
+        offset = int(request.args.get('offset', 0))
+
+        query = db.session.query(GeoChat).join(
+            EUD, GeoChat.sender_uid == EUD.uid
+        ).add_columns(
+            EUD.callsign.label('sender_callsign')
+        ).order_by(GeoChat.timestamp.desc())
+
+        if chatroom_id:
+            query = query.filter(GeoChat.chatroom_id == bleach.clean(chatroom_id))
+        if sender_uid:
+            query = query.filter(GeoChat.sender_uid == bleach.clean(sender_uid))
+
+        total = query.count()
+        results = query.offset(offset).limit(limit).all()
+
+        messages = []
+        for geochat, sender_callsign in results:
+            msg = {
+                'uid': geochat.uid,
+                'chatroom_id': geochat.chatroom_id,
+                'sender_uid': geochat.sender_uid,
+                'sender_callsign': sender_callsign,
+                'remarks': geochat.remarks,
+                'timestamp': geochat.timestamp.isoformat() if geochat.timestamp else None,
+            }
+            messages.append(msg)
+
+        # Reverse so oldest first (for chat display)
+        messages.reverse()
+
+        return jsonify({
+            'success': True,
+            'messages': messages,
+            'total': total,
+            'limit': limit,
+            'offset': offset
+        })
+    except BaseException as e:
+        logger.error(traceback.format_exc())
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@api_blueprint.route('/api/geochat/send', methods=['POST'])
+@auth_required()
+def send_geochat():
+    """
+    Send a message to a chatroom/channel.
+    Inserts directly into DB (bypasses cot_parser which can't handle web-originated messages).
+    Also publishes to RabbitMQ for real-time TAK client delivery + Meshtastic bridge.
+    """
+    try:
+        import pika
+        import uuid
+        from opentakserver.models.GeoChat import GeoChat
+        from opentakserver.models.Chatrooms import Chatroom
+        from opentakserver.models.CoT import CoT
+        from opentakserver.models.Point import Point
+        from opentakserver.models.EUD import EUD
+
+        data = request.json
+        if not data:
+            return jsonify({'success': False, 'error': 'No JSON body provided'}), 400
+
+        chatroom_id = data.get('chatroom_id', 'All Chat Rooms')
+        message = data.get('message', '')
+        to_meshtastic = data.get('to_meshtastic', True)
+
+        if not message:
+            return jsonify({'success': False, 'error': 'Message cannot be empty'}), 400
+
+        message = bleach.clean(message)
+        chatroom_id = bleach.clean(chatroom_id)
+
+        sender_uid = f"WebUI-{current_user.username}"
+        sender_callsign = current_user.username
+        now = datetime.datetime.now(datetime.timezone.utc)
+        msg_uid = f"GeoChat.{sender_uid}.{chatroom_id}.{uuid.uuid4()}"
+
+        # Ensure sender EUD exists
+        eud = db.session.query(EUD).filter_by(uid=sender_uid).first()
+        if not eud:
+            eud = EUD()
+            eud.uid = sender_uid
+            eud.callsign = sender_callsign
+            eud.device = 'WebUI'
+            eud.os = 'WebUI'
+            eud.platform = 'WebUI'
+            eud.version = '1.0'
+            eud.last_event_time = now
+            eud.last_status = 'Online'
+            db.session.add(eud)
+            db.session.flush()
+
+        # Ensure chatroom exists
+        chatroom = db.session.query(Chatroom).filter_by(id=chatroom_id).first()
+        if not chatroom:
+            chatroom = Chatroom()
+            chatroom.id = chatroom_id
+            chatroom.name = chatroom_id
+            chatroom.parent = 'RootContactGroup'
+            db.session.add(chatroom)
+            db.session.flush()
+
+        # Insert CoT record
+        time_str = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+        stale_str = (now + datetime.timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        safe_message = xml_escape(message)
+        safe_chatroom = xml_escape(chatroom_id)
+        safe_sender_uid = xml_escape(sender_uid)
+        safe_callsign = xml_escape(sender_callsign)
+        safe_msg_uid = xml_escape(msg_uid)
+
+        cot_xml = f'<event how="h-g-i-g-o" stale="{stale_str}" start="{time_str}" time="{time_str}" type="b-t-f" uid="{safe_msg_uid}" version="2.0"><point ce="9999999" hae="0" lat="0" le="9999999" lon="0"/><detail><__chat chatroom="{safe_chatroom}" groupOwner="false" id="{safe_chatroom}" senderCallsign="{safe_callsign}"><chatgrp id="{safe_chatroom}" uid0="{safe_sender_uid}" uid1="{safe_chatroom}"/></__chat><link relation="p-p" type="a-f-G-U-C" uid="{safe_sender_uid}"/><remarks source="{safe_sender_uid}" time="{time_str}" to="{safe_chatroom}">{safe_message}</remarks></detail></event>'
+
+        cot = CoT()
+        cot.uid = msg_uid
+        cot.type = 'b-t-f'
+        cot.how = 'h-g-i-g-o'
+        cot.sender_uid = sender_uid
+        cot.sender_callsign = sender_callsign
+        cot.timestamp = now
+        cot.start = now
+        cot.stale = now + datetime.timedelta(minutes=5)
+        cot.xml = cot_xml
+        db.session.add(cot)
+        db.session.flush()
+
+        # Insert Point record (required FK, use 0,0 for web messages)
+        point = Point()
+        point.uid = sender_uid
+        point.device_uid = sender_uid
+        point.ce = 9999999
+        point.le = 9999999
+        point.hae = 0
+        point.latitude = 0
+        point.longitude = 0
+        point.timestamp = now
+        db.session.add(point)
+        db.session.flush()
+
+        # Insert GeoChat record
+        geochat = GeoChat()
+        geochat.uid = msg_uid
+        geochat.chatroom_id = chatroom_id
+        geochat.sender_uid = sender_uid
+        geochat.remarks = message
+        geochat.timestamp = now
+        geochat.point_id = point.id
+        geochat.cot_id = cot.id
+        db.session.add(geochat)
+        db.session.commit()
+
+        logger.info(f"Chat message saved: [{chatroom_id}] {sender_callsign}: {message[:50]}")
+
+        # Publish to RabbitMQ for real-time delivery to TAK clients
+        try:
+            import json as _json
+            wrapped = _json.dumps({'uid': sender_uid, 'cot': cot_xml})
+            connection = pika.BlockingConnection(
+                pika.ConnectionParameters(
+                    host=app.config.get('OTS_RABBITMQ_SERVER_ADDRESS', 'rabbitmq'),
+                    credentials=pika.PlainCredentials(
+                        app.config.get('OTS_RABBITMQ_USERNAME', 'guest'),
+                        app.config.get('OTS_RABBITMQ_PASSWORD', 'guest')
+                    )
+                )
+            )
+            channel = connection.channel()
+            channel.basic_publish(exchange='chatrooms', routing_key=chatroom_id, body=wrapped)
+            connection.close()
+        except Exception as e:
+            logger.error(f"RabbitMQ publish failed (message saved to DB): {e}")
+
+        # If sending to Meshtastic, also publish to mesh channels
+        if to_meshtastic and app.config.get('OTS_ENABLE_MESHTASTIC', False):
+            try:
+                from meshtastic.protobuf import mesh_pb2, portnums_pb2, mqtt_pb2
+                import base64
+
+                mesh_topic = app.config.get('OTS_MESHTASTIC_TOPIC', 'msh')
+                # Map common chatroom names to Meshtastic channel names
+                channel_map = {
+                    'All Chat Rooms': 'ALLCALL',
+                    'ALLCALL': 'ALLCALL',
+                    'SECURITY': 'SECURITY',
+                    'PRODUCTION': 'PRODUCTION',
+                    'STAFF': 'STAFF',
+                }
+                mesh_channel = channel_map.get(chatroom_id, 'ALLCALL')
+
+                # Build Meshtastic protobuf for TEXT_MESSAGE_APP
+                pb_data = mesh_pb2.Data()
+                pb_data.portnum = portnums_pb2.TEXT_MESSAGE_APP
+                pb_data.payload = message.encode('utf-8')
+
+                # Channel name -> index map (matches the gateway's channel order:
+                # 0=PRIMARY, 1=ALLCALL, 2=SECURITY, 3=PRODUCTION, 4=STAFF, 5=PKI).
+                # This must agree with the order the chip's USERPREFS bake them in.
+                channel_index_map = {
+                    'ALLCALL': 1, 'SECURITY': 2, 'PRODUCTION': 3, 'STAFF': 4, 'PKI': 5,
+                }
+                ch_idx = channel_index_map.get(mesh_channel, 1)
+
+                # Generate a non-zero random packet_id (uint32) — Meshtastic firmware
+                # rejects packets with id=0 from MQTT-source.
+                import random as _rnd
+                pkt_id = _rnd.randint(1, 0xFFFFFFFF)
+
+                # Use a stable cloud node id (uint32) for 'from'. Hash the username so
+                # the same WebUI sender always shows up as the same mesh node id.
+                import hashlib as _hl
+                from_id = int(_hl.sha256(current_user.username.encode()).hexdigest()[:8], 16) | 0x80000000
+
+                mesh_packet = mesh_pb2.MeshPacket()
+                mesh_packet.decoded.CopyFrom(pb_data)
+                mesh_packet.to = 0xFFFFFFFF  # Broadcast
+                mesh_packet.want_ack = False
+                mesh_packet.id = pkt_id
+                setattr(mesh_packet, 'from', from_id)  # 'from' is reserved word, use setattr
+                mesh_packet.channel = ch_idx
+                mesh_packet.hop_limit = 7
+
+                service_envelope = mqtt_pb2.ServiceEnvelope()
+                service_envelope.packet.CopyFrom(mesh_packet)
+                service_envelope.channel_id = mesh_channel
+                # Use a real-looking gateway_id (8 hex chars, '!' prefix per Meshtastic
+                # convention). Some firmwares filter on this format.
+                service_envelope.gateway_id = f"!{from_id:08x}"
+
+                # Publish to Meshtastic outgoing topic via RabbitMQ
+                mesh_connection = pika.BlockingConnection(
+                    pika.ConnectionParameters(
+                        host=app.config.get('OTS_RABBITMQ_SERVER_ADDRESS', 'rabbitmq'),
+                        credentials=pika.PlainCredentials(
+                        app.config.get('OTS_RABBITMQ_USERNAME', 'guest'),
+                        app.config.get('OTS_RABBITMQ_PASSWORD', 'guest')
+                    )
+                    )
+                )
+                mesh_ch = mesh_connection.channel()
+                routing_key = f"{mesh_topic}.2.e.{mesh_channel}.outgoing"
+                mesh_ch.basic_publish(
+                    exchange='amq.topic',
+                    routing_key=routing_key,
+                    body=service_envelope.SerializeToString()
+                )
+                mesh_connection.close()
+                logger.info(f"Published text message to Meshtastic: {routing_key}")
+            except ImportError:
+                logger.warning("Meshtastic protobuf library not available - message not sent to mesh")
+            except Exception as e:
+                logger.warning(f"Failed to publish to Meshtastic: {e}")
+
+        return jsonify({
+            'success': True,
+            'message': 'Message sent',
+            'uid': msg_uid,
+            'chatroom_id': chatroom_id
+        })
+
+    except BaseException as e:
+        logger.error(traceback.format_exc())
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@api_blueprint.route('/api/gateway/health', methods=['GET'])
+def get_gateway_health():
+    """Gateway health from monitor cron. Public — read-only status data."""
+    import sys, traceback as _tb
+    try:
+        stats_path = "/app/ots/gateway-stats.json"
+        if os.path.exists(stats_path):
+            with open(stats_path) as f:
+                data = json.load(f)
+            return jsonify(data)
+        return jsonify({"connected": False, "error": "No stats yet — monitor cron may not have run"}), 200
+    except Exception as e:
+        sys.stderr.write(f"\n*** get_gateway_health EXC: {e}\n{_tb.format_exc()}\n***\n")
+        sys.stderr.flush()
+        return jsonify({"connected": False, "error": f"{type(e).__name__}: {e}"}), 500
+
+
+@api_blueprint.route('/api/gateway/log', methods=['GET'])
+@auth_required()
+def get_gateway_log():
+    """Last N lines of gateway health log."""
+    try:
+        lines = int(request.args.get('lines', 50))
+        log_path = "/app/ots/gateway-health.log"
+        if os.path.exists(log_path):
+            with open(log_path) as f:
+                all_lines = f.readlines()
+            return jsonify({"lines": [l.strip() for l in all_lines[-lines:]]})
+        return jsonify({"lines": []})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@api_blueprint.route('/api/meshtastic/channels', methods=['GET'])
+@auth_required()
+def get_meshtastic_channels():
+    """Get configured Meshtastic channels from config."""
+    try:
+        config_path = os.path.join(app.config.get("OTS_DATA_FOLDER"), "config.yml")
+        with open(config_path, "r") as f:
+            config = yaml.safe_load(f.read())
+
+        channels = config.get('OTS_MESHTASTIC_DOWNLINK_CHANNELS', [])
+        topic = config.get('OTS_MESHTASTIC_TOPIC', 'msh')
+        enabled = config.get('OTS_ENABLE_MESHTASTIC', False)
+
+        # Default channels if none configured
+        if not channels:
+            channels = ['ALLCALL', 'SECURITY', 'PRODUCTION', 'STAFF']
+
+        return jsonify({
+            'success': True,
+            'enabled': enabled,
+            'topic': topic,
+            'channels': channels
+        })
+    except BaseException as e:
+        logger.error(traceback.format_exc())
+        return jsonify({'success': False, 'error': str(e)}), 500
