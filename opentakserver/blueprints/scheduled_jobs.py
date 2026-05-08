@@ -293,7 +293,13 @@ def delete_old_data():
 
         # I wish I hadn't made the marker's timestamp field a string...
         markers = db.session.execute(db.session.query(Marker)).all()
-        groups = db.session.execute(db.session.query(Group)).scalars()
+        # `.scalars()` returns a single-pass iterator — the inner `for group
+        # in groups:` loop drains it on the first marker, so every subsequent
+        # marker (and the rb_lines + alerts loops below that share this var)
+        # publishes ZERO delete-CoTs and stale objects never disappear from
+        # clients. Materialise to a list so we can iterate per marker.
+        # Audit 2026-05-08 finding C5.
+        groups = list(db.session.execute(db.session.query(Group)).scalars())
         for marker in markers:
             marker = marker[0]
             if datetime_from_iso8601_string(marker.production_time) <= timestamp:

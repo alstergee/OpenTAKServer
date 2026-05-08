@@ -17,6 +17,22 @@ import pika
 import pytz
 import requests
 import sqlalchemy
+
+# Monkey-patch the `requests` library with a default timeout. Audit
+# 2026-05-08 finding H-B7 / H8: every requests.* call in the codebase (15
+# sites: app.py, scheduled_jobs.py, mediamtx_api.py) was made with NO
+# `timeout=` argument, so a hung upstream (airplanes.live, AISHub, mediamtx)
+# would block the apscheduler worker forever. (5s connect, 30s read) is
+# conservative and lets each call site override locally if needed. Done at
+# import time so it covers every later import of the requests module.
+def _ots_default_request_timeout(orig_request):
+    def wrapper(method, url, **kwargs):
+        kwargs.setdefault("timeout", (5, 30))
+        return orig_request(method, url, **kwargs)
+    return wrapper
+requests.api.request = _ots_default_request_timeout(requests.api.request)
+# `requests.get` / `requests.post` etc. all funnel through requests.api.request
+# so patching at that point covers every wrapper without touching them.
 import yaml
 from flask import Flask, current_app, g, request, session
 from flask_cors import CORS

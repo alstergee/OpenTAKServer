@@ -22,9 +22,18 @@ def authenticated_only(f):
 
 
 def administrator_only(f):
+    """Socket.IO admin gate. The original logic was:
+        if not authenticated AND not admin: disconnect
+    which only fires for unauthenticated users — ANY logged-in user (including
+    role-less basic accounts) passed the admin gate. Audit 2026-05-08 finding
+    C6 (latent: no `@administrator_only` consumers in current source, but the
+    decorator is publicly exported and a footgun for future handlers).
+    Correct:
+        if NOT (authenticated AND admin): disconnect
+    """
     @functools.wraps(f)
     def wrapped(*args, **kwargs):
-        if not current_user.is_authenticated and not current_user.has_role("administrator"):
+        if not (current_user.is_authenticated and current_user.has_role("administrator")):
             logger.debug("Disconnecting {} from {}".format(request.sid, request.namespace))
             disconnect(request.sid, namespace=request.namespace)
         else:
