@@ -148,7 +148,7 @@ def new_atak_qr_string():
             response["success"] = True
             response["disabled"] = token.disabled
             response["qr_string"] = (
-                f"tak://com.atakmap.app/enroll?host={urlparse(request.url_root).hostname}&username={username}&token={token.generate_token()}"
+                f"tak://com.atakmap.app/enroll?host={(urlparse(request.url_root).hostname or '').split(',')[0].strip() or app.config.get('OTS_FQDN', '')}&username={username}&token={token.generate_token()}"
             )
             return jsonify(response)
 
@@ -183,7 +183,7 @@ def get_atak_qr_strings():
         response["disabled"] = token[0].disabled
         response["total_uses"] = token[0].total_uses
         response["qr_string"] = (
-            f"tak://com.atakmap.app/enroll?host={urlparse(request.url_root).hostname}&username={token[0].username}&token={token[0].generate_token()}"
+            f"tak://com.atakmap.app/enroll?host={(urlparse(request.url_root).hostname or '').split(',')[0].strip() or app.config.get('OTS_FQDN', '')}&username={token[0].username}&token={token[0].generate_token()}"
         )
         return jsonify(response)
     else:
