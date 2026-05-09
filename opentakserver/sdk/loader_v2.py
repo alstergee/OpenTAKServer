@@ -54,7 +54,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, Flask
+from flask import Blueprint, Flask, send_from_directory
 
 from opentakserver.sdk.manifest import (
     BackgroundWorkerMount,
@@ -259,6 +259,11 @@ class PluginManagerV2:
         # Per-plugin apscheduler job ids so we can remove them cleanly on
         # reload/uninstall.
         self._scheduled_jobs: dict[str, list[str]] = {}
+        # Per-plugin filesystem directory of the package — set during
+        # ``discover()`` from the parent of ``plugin.toml``. Used by
+        # ``_register_ui_static`` to serve the plugin's ``ui/`` assets at
+        # ``/api/plugins/<slug>/ui`` so MountTab's iframe has a target.
+        self._package_dirs: dict[str, Path] = {}
 
     # ------------------------------------------------------------------
     # Discovery
@@ -324,6 +329,10 @@ class PluginManagerV2:
                     extra={'plugin': package_root},
                 )
                 continue
+
+            # Stash the package directory so ``register()`` can find the
+            # plugin's ``ui/`` assets and serve them at /api/plugins/<slug>/ui.
+            self._package_dirs[manifest.slug] = toml_path.parent
 
             logger.info(
                 'discovered v2 plugin manifest',
@@ -397,6 +406,22 @@ class PluginManagerV2:
                     exc_info=True,
                 )
 
+        # 1b) Register the plugin's static UI directory, if it ships one.
+        # The dashboard's MountTab iframe loads /api/plugins/<slug>/ui — for
+        # plugins that bundle a `ui/` folder next to their __init__.py we
+        # serve those assets here. Plugins without a `ui/` dir get no static
+        # routes, which is fine (their tab mount is metadata-only).
+        try:
+            self._register_ui_static(manifest, blueprint)
+        except Exception as exc:  # noqa: BLE001 — never fatal
+            logger.error(
+                'plugin %r: failed to register static UI: %s',
+                slug,
+                exc,
+                extra={'plugin': slug},
+                exc_info=True,
+            )
+
         # 2) Register the blueprint once at the end (Flask requires all
         # routes added before ``register_blueprint``). Skip if the
         # blueprint has no routes (no UI/webhook mounts).
@@ -442,6 +467,87 @@ class PluginManagerV2:
         '''
         bp_name = f'plugin_{manifest.slug.replace("-", "_")}'
         return Blueprint(bp_name, __name__)
+
+    def _register_ui_static(
+        self,
+        manifest: PluginManifest,
+        blueprint: Blueprint,
+    ) -> None:
+        '''Serve the plugin's ``ui/`` directory at ``/api/plugins/<slug>/ui``.
+
+        Looks for a ``ui/`` folder next to the package's ``plugin.toml``
+        (cached from ``discover()``). If found, registers three routes:
+
+        * ``GET /ui``  → ``ui/index.html``
+        * ``GET /ui/`` → ``ui/index.html``
+        * ``GET /ui/<path:filename>`` → ``ui/<filename>``
+
+        These map onto the dashboard's MountTab iframe contract — the
+        iframe always points at ``/api/plugins/<slug>/ui`` and expects
+        an HTML response.
+
+        Plugins that don't ship a ``ui/`` directory are no-ops here. A
+        ``kind:'tab'`` mount on a UI-less plugin will render an iframe
+        that 404s, but that's the plugin author's choice — we don't
+        invent placeholder HTML.
+        '''
+        pkg_dir = self._package_dirs.get(manifest.slug)
+        if pkg_dir is None:
+            return
+        ui_dir = pkg_dir / 'ui'
+        if not ui_dir.is_dir():
+            return
+        index = ui_dir / 'index.html'
+        if not index.is_file():
+            logger.warning(
+                'plugin %r ships ui/ but no ui/index.html — skipping static '
+                'route registration (the iframe would 404 on /ui)',
+                manifest.slug,
+                extra={'plugin': manifest.slug},
+            )
+            return
+
+        # Capture the resolved directory in the closure so the view
+        # functions don't have to re-resolve at request time. Endpoint
+        # names are slug-scoped to avoid collisions when multiple v2
+        # plugins register on the same blueprint name space.
+        ui_dir_str = str(ui_dir)
+        slug_safe = manifest.slug.replace('-', '_')
+
+        def serve_ui_index() -> Any:
+            return send_from_directory(ui_dir_str, 'index.html')
+
+        def serve_ui_file(filename: str) -> Any:
+            return send_from_directory(ui_dir_str, filename)
+
+        serve_ui_index.__name__ = f'ui_index_{slug_safe}'
+        serve_ui_file.__name__ = f'ui_file_{slug_safe}'
+
+        blueprint.add_url_rule(
+            '/ui',
+            endpoint=f'ui_index_{slug_safe}',
+            view_func=serve_ui_index,
+            methods=['GET'],
+        )
+        blueprint.add_url_rule(
+            '/ui/',
+            endpoint=f'ui_index_slash_{slug_safe}',
+            view_func=serve_ui_index,
+            methods=['GET'],
+        )
+        blueprint.add_url_rule(
+            '/ui/<path:filename>',
+            endpoint=f'ui_file_{slug_safe}',
+            view_func=serve_ui_file,
+            methods=['GET'],
+        )
+        logger.info(
+            'plugin %r: registered static UI at /api/plugins/%s/ui from %s',
+            manifest.slug,
+            manifest.slug,
+            ui_dir,
+            extra={'plugin': manifest.slug},
+        )
 
     def _register_mount(
         self,
