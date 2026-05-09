@@ -125,6 +125,13 @@ class DefaultConfig:
     OTS_ENABLE_PLUGINS = True
     OTS_PLUGIN_REPO = "https://repo.opentakserver.io/brian/prod/"
     OTS_PLUGIN_PREFIXES = ["ots-", "ots_"]
+    # SDK v2 marketplace catalogue (D-5). JSON document validated by
+    # opentakserver.sdk.marketplace.Marketplace; consumed by the
+    # /api/plugins/v2/marketplace endpoint with a 5min in-memory cache.
+    OTS_PLUGIN_MARKETPLACE_URL = (
+        "https://raw.githubusercontent.com/alstergee/OpenTAKServer/"
+        "alstergee-fixes/marketplace.json"
+    )
 
     # AIS Settings
     OTS_AISHUB_USERNAME = None

@@ -1,0 +1,189 @@
+{
+  "$defs": {
+    "MarketplaceEntry": {
+      "additionalProperties": false,
+      "description": "A single plugin advertised in the marketplace.\n\nMirrors the dashboard's \"Available\" plugin row in B.4: name, version,\ndescription, mount + scope summaries, and an ``install_source`` the v2\nAPI can hand to pip.",
+      "properties": {
+        "author": {
+          "minLength": 1,
+          "title": "Author",
+          "type": "string"
+        },
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "docs_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Docs Url"
+        },
+        "homepage": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Homepage"
+        },
+        "icon": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Icon"
+        },
+        "install_source": {
+          "minLength": 1,
+          "title": "Install Source",
+          "type": "string"
+        },
+        "license": {
+          "minLength": 1,
+          "title": "License",
+          "type": "string"
+        },
+        "minimum_ots_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimum Ots Version"
+        },
+        "mounts_summary": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Mounts Summary",
+          "type": "array"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "permissions_summary": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Permissions Summary"
+        },
+        "published_at": {
+          "format": "date-time",
+          "title": "Published At",
+          "type": "string"
+        },
+        "sdk_version": {
+          "default": 2,
+          "enum": [
+            1,
+            2
+          ],
+          "title": "Sdk Version",
+          "type": "integer"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sha256"
+        },
+        "signature": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Signature"
+        },
+        "slug": {
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "title": "Slug",
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "slug",
+        "name",
+        "version",
+        "description",
+        "author",
+        "license",
+        "install_source",
+        "published_at"
+      ],
+      "title": "MarketplaceEntry",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Top-level marketplace catalogue document.",
+  "properties": {
+    "last_updated": {
+      "format": "date-time",
+      "title": "Last Updated",
+      "type": "string"
+    },
+    "plugins": {
+      "items": {
+        "$ref": "#/$defs/MarketplaceEntry"
+      },
+      "title": "Plugins",
+      "type": "array"
+    },
+    "schema_version": {
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "last_updated"
+  ],
+  "title": "Marketplace",
+  "type": "object"
+}

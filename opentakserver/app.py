@@ -343,6 +343,24 @@ def create_app(cli=True):
 
         app.register_blueprint(ots_api)
 
+        # Plugin SDK v2: instantiate the loader and stash it on
+        # app.extensions so the /api/plugins/v2/* admin endpoints (and
+        # any other consumer) can find it. We do NOT call .discover()
+        # here — that happens later, alongside the legacy
+        # PluginManager.load_plugins() call, so vanilla and v2 plugins
+        # boot together. If the loader import fails for any reason, the
+        # v2 admin API gracefully degrades to "no v2 plugins known".
+        if not hasattr(app, "extensions") or app.extensions is None:
+            app.extensions = {}
+        try:
+            from opentakserver.sdk.loader_v2 import PluginManagerV2
+
+            app.extensions["plugin_manager_v2"] = PluginManagerV2(app)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"Failed to initialise PluginManagerV2: {exc}")
+            logger.debug(traceback.format_exc())
+            app.extensions.setdefault("plugin_manager_v2", None)
+
         from opentakserver.blueprints.ots_socketio import ots_socketio_blueprint
 
         app.register_blueprint(ots_socketio_blueprint)
@@ -549,6 +567,31 @@ def main(app):
         except BaseException as e:
             logger.error(f"Failed to load plugins: {e}")
             logger.debug(traceback.format_exc())
+
+        # Plugin SDK v2: discover + register every v2 plugin so its mounts
+        # appear in /api/plugins/v2/installed and /api/plugins/v2/mounts. The
+        # vanilla loader above has already wired the legacy blueprints; the
+        # v2 loader is purely additive (different URL prefix per slug).
+        v2_mgr = app.extensions.get("plugin_manager_v2") if hasattr(app, "extensions") else None
+        if v2_mgr is not None:
+            try:
+                discovered = v2_mgr.discover()
+                for manifest in discovered:
+                    try:
+                        v2_mgr.register(manifest)
+                    except BaseException as e:
+                        logger.error(
+                            "Failed to register v2 plugin %s: %s", manifest.slug, e
+                        )
+                        logger.debug(traceback.format_exc())
+                logger.info(
+                    "Plugin SDK v2: discovered %d, registered %d",
+                    len(discovered),
+                    len(v2_mgr.manifests()),
+                )
+            except BaseException as e:
+                logger.error(f"Plugin SDK v2 discovery failed: {e}")
+                logger.debug(traceback.format_exc())
 
     app.start_time = datetime.now(timezone.utc)
 

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "last_updated": "2026-05-09T00:00:00Z",
+  "plugins": [
+    {
+      "slug": "ots-mapmarker-plugin",
+      "name": "MapMarker",
+      "version": "1.2",
+      "description": "Google Drive KML sync — auto-pull KMLs from a Drive folder, serve them as Map overlays + ATAK Data Packages.",
+      "author": "Alstergee",
+      "license": "MIT",
+      "homepage": "https://github.com/alstergee/OpenTAKServer",
+      "docs_url": "https://github.com/alstergee/OpenTAKServer/blob/alstergee-fixes/docs/plugins/mapmarker.md",
+      "icon": "map-pin",
+      "install_source": "git+https://github.com/alstergee/OpenTAKServer-mapmarker-plugin.git",
+      "sdk_version": 2,
+      "mounts_summary": ["tab", "map_overlay", "data_package_generator"],
+      "permissions_summary": {
+        "read": ["kml", "config", "storage"],
+        "write": ["kml", "storage", "dp"],
+        "mesh": false,
+        "mission": "none",
+        "admin_routes": true
+      },
+      "published_at": "2026-05-09T00:00:00Z"
+    }
+  ]
+}

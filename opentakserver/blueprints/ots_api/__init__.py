@@ -14,6 +14,7 @@ from opentakserver.blueprints.ots_api.meshtastic_api import meshtastic_api_bluep
 from opentakserver.blueprints.ots_api.mission_api import data_sync_api
 from opentakserver.blueprints.ots_api.package_api import packages_blueprint
 from opentakserver.blueprints.ots_api.plugin_api import plugin_blueprint
+from opentakserver.blueprints.ots_api.plugins_v2_api import plugins_v2_blueprint
 from opentakserver.blueprints.ots_api.scheduler_api import scheduler_api_blueprint
 from opentakserver.blueprints.ots_api.token_api import token_api_blueprint
 from opentakserver.blueprints.ots_api.user_api import user_api_blueprint
@@ -39,6 +40,7 @@ ots_api.register_blueprint(data_sync_api)
 ots_api.register_blueprint(group_api)
 ots_api.register_blueprint(eud_stats_blueprint)
 ots_api.register_blueprint(plugin_blueprint)
+ots_api.register_blueprint(plugins_v2_blueprint)
 ots_api.register_blueprint(token_api_blueprint)
 ots_api.register_blueprint(ldap_blueprint)
 ots_api.register_blueprint(tak_gov_link_blueprint)
