@@ -575,6 +575,84 @@ def delete_eud(uid):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+# Editable fields surfaced in the dashboard's EUDs page edit dialog. uid is
+# the device's stable identity — changing it cascades through points, CoT,
+# certs, chat, mesh, mission contents — so we deliberately do NOT accept it
+# here. user_id (assign-to-user) has its own purpose-built endpoint at
+# /api/user/assign_eud, with the user-search UX that change implies.
+_EUD_EDITABLE_FIELDS = {
+    "callsign",
+    "device",
+    "platform",
+    "os",
+    "version",
+    "phone_number",
+    "team_role",
+}
+
+
+@api_blueprint.route("/api/eud/<uid>", methods=["PATCH"])
+@auth_required()
+def update_eud(uid):
+    """Update an EUD's editable metadata. Administrator only.
+
+    Accepts a JSON body with any subset of _EUD_EDITABLE_FIELDS. Empty
+    strings are coerced to NULL so admins can clear a field. Unknown keys
+    are silently ignored — the UI may post the full record back.
+    """
+    if not current_user.has_role("administrator"):
+        return jsonify({"success": False, "error": "Administrator role required"}), 403
+    eud = db.session.query(EUD).filter_by(uid=uid).first()
+    if not eud:
+        return jsonify({"success": False, "error": f"EUD not found: {uid}"}), 404
+
+    data = request.get_json(silent=True) or {}
+    changed = []
+    try:
+        for k, v in data.items():
+            if k not in _EUD_EDITABLE_FIELDS:
+                continue
+            if k == "phone_number":
+                if v in (None, "", 0, "0"):
+                    v = None
+                else:
+                    try:
+                        v = int(str(v).strip())
+                    except (TypeError, ValueError):
+                        return jsonify({
+                            "success": False,
+                            "error": "phone_number must be numeric",
+                        }), 400
+            elif isinstance(v, str) and v.strip() == "":
+                v = None
+            setattr(eud, k, v)
+            changed.append(k)
+
+        if not changed:
+            return jsonify({"success": True, "uid": uid, "callsign": eud.callsign, "changed": []})
+
+        db.session.commit()
+        logger.info(
+            f"Updated EUD {uid} ({eud.callsign}) by {current_user.username}: {changed}"
+        )
+        return jsonify({
+            "success": True,
+            "uid": uid,
+            "callsign": eud.callsign,
+            "changed": changed,
+        })
+    except sqlalchemy.exc.IntegrityError as e:
+        db.session.rollback()
+        msg = str(getattr(e, "orig", e)).lower()
+        if "callsign" in msg:
+            return jsonify({"success": False, "error": "Callsign already in use"}), 409
+        return jsonify({"success": False, "error": "Database constraint violation"}), 409
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Failed to update EUD {uid}: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @api_blueprint.route("/api/truststore")
 @auth_required()
 def get_truststore():
