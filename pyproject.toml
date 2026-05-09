@@ -43,6 +43,7 @@ psutil = "7.1.3"
 psycopg = "3.2.12"
 pyfiglet = "1.0.2"
 pygc = "2.0.0"
+pydantic = "^2.9"  # plugin SDK v2 manifest schema (sdk/manifest.py)
 PyJWT = "2.12.1"
 pytak = "7.0.2"
 python = ">=3.10, <3.15"
