@@ -329,8 +329,66 @@ class MeshtasticController(RabbitMQClient):
                                            'role': _s(dev.get('role'), 'Team Member')})
         return event
 
+    def _ensure_device(self, from_id, long_name=''):
+        """Make a brand-new mesh device first-class so its VERY FIRST position is
+        tracked on the map. Two failure modes this closes for never-before-seen
+        devices joining our channels:
+          1. position() reads self.meshtastic_devices[from_id] unconditionally —
+             a missing entry KeyErrors and the CoT is silently dropped.
+          2. the points/cot FK needs an euds row, and an empty callsign collides
+             on euds_callsign_key — so default to meshtastic_<uid>.
+        Idempotent + race-tolerant (mirrors save_chat_to_db's EUD logic)."""
+        if from_id not in self.meshtastic_devices:
+            self.meshtastic_devices[from_id] = {'hw_model': '', 'long_name': long_name or '', 'short_name': '',
+                                                'macaddr': '', 'firmware_version': '', 'last_lat': "0.0",
+                                                'last_lon': "0.0", 'battery': 0, 'meshtastic_id': from_id,
+                                                'voltage': 0, 'uptime': 0, 'last_alt': "9999999.0",
+                                                'course': '0.0', 'speed': '0.0', 'team': 'Cyan',
+                                                'role': 'Team Member', 'uid': None}
+        try:
+            with self.context:
+                now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                eud = self.db.session.query(EUD).filter_by(uid=from_id).first()
+                if not eud:
+                    eud_callsign = long_name if long_name and str(long_name).strip() else 'meshtastic_{}'.format(from_id)
+                    eud = EUD()
+                    eud.uid = from_id
+                    eud.callsign = eud_callsign
+                    eud.device = 'Meshtastic'
+                    eud.os = 'Meshtastic'
+                    eud.platform = 'Meshtastic'
+                    eud.version = '1.0'
+                    eud.last_event_time = now
+                    eud.last_status = 'Connected'
+                    try:
+                        self.db.session.add(eud)
+                        self.db.session.commit()
+                        self.logger.info("Registered new mesh device {} as {}".format(from_id, eud_callsign))
+                    except Exception:
+                        # Concurrent insert won the race for this uid — roll back and carry on.
+                        self.db.session.rollback()
+                else:
+                    # CRITICAL: keep an actively-reporting device LIVE. The map only plots
+                    # recent EUDs and scheduled_jobs DELETES + publishes delete-CoTs for any
+                    # EUD past its last_event_time. Without bumping this on every position, a
+                    # radio that's transmitting right now still reads as offline (the "May 8"
+                    # ghosting) and never pins. Also adopt a real owner name over a placeholder.
+                    eud.last_event_time = now
+                    eud.last_status = 'Connected'
+                    if long_name and str(long_name).strip() and (not eud.callsign or str(eud.callsign).startswith('meshtastic_')):
+                        eud.callsign = long_name
+                    try:
+                        self.db.session.add(eud)
+                        self.db.session.commit()
+                    except Exception:
+                        self.db.session.rollback()
+        except BaseException as e:
+            self.logger.error("_ensure_device failed for {}: {}".format(from_id, e))
+
     def position(self, pb, from_id, to_id, portnum):
         try:
+            # New device joining our channels → register it before any dict/FK access.
+            self._ensure_device(from_id, getattr(pb, 'long_name', ''))
             if portnum == "MAP_REPORT_APP" and pb.firmware_version != self.meshtastic_devices[from_id]['firmware_version']:
                 try:
                     with self.context:
@@ -523,6 +581,12 @@ class MeshtasticController(RabbitMQClient):
                 pass
 
     def node_info(self, pb, from_id, to_id, portnum):
+        # Register on nodeinfo too. Devices that send NODEINFO before any POSITION
+        # (e.g. no GPS fix yet) must still land in euds — otherwise the
+        # unconditional self.meshtastic_devices[from_id] access below KeyErrors and
+        # the device never registers. Registering now means it pins the instant a
+        # position arrives. (A pin still REQUIRES a position; nodeinfo carries none.)
+        self._ensure_device(from_id, getattr(pb, 'long_name', '') or '')
         if portnum == "ATAK_PLUGIN":
             uid = unishox2.decompress(pb.contact.device_callsign, len(pb.contact.device_callsign))
             self.meshtastic_devices[from_id]['uid'] = uid

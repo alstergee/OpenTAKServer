@@ -72,6 +72,17 @@ class EUD(db.Model):
         config_datapackage_hash = None
         if self.certificate and self.certificate.data_package:
             config_datapackage_hash = self.certificate.data_package.hash
+        # Latest position for the map. Hardcoding last_point=None blanked every
+        # pin (the map_state EUD list is the map's data source and carried no
+        # coords). This is a single indexed LIMIT-1 lookup — not the full-points
+        # lazy-load the original optimization was avoiding.
+        from opentakserver.models.Point import Point
+        _last_point = (
+            db.session.query(Point)
+            .filter_by(device_uid=self.uid)
+            .order_by(Point.timestamp.desc())
+            .first()
+        )
         return {
             "uid": self.uid,
             "callsign": self.callsign,
@@ -85,7 +96,7 @@ class EUD(db.Model):
             ),
             "last_status": self.last_status,
             "username": self.user.username if self.user else None,
-            "last_point": None,  # Setting to None for now since it can cause a huge overhead when an EUD has lots of points in the DB
+            "last_point": _last_point.to_json() if _last_point else None,
             "team": self.team.name if self.team else None,
             "team_color": self.team.get_team_color() if self.team else None,
             "team_role": self.team_role,
