@@ -1,4 +1,9 @@
+import uuid
+
 from gevent import monkey
+
+from opentakserver.models.Mission import Mission
+from opentakserver.models.MissionRole import MissionRole
 
 monkey.patch_all()
 
@@ -56,10 +61,37 @@ from opentakserver.controllers.meshtastic_controller import MeshtasticController
 from opentakserver.defaultconfig import DefaultConfig
 from opentakserver.EmailValidator import EmailValidator
 from opentakserver.extensions import apscheduler, babel, db, ldap_manager, logger, mail, socketio
+from opentakserver.models.Alert import Alert
+from opentakserver.models.CasEvac import CasEvac
+from opentakserver.models.Certificate import Certificate
+from opentakserver.models.Chatrooms import Chatroom
+from opentakserver.models.ChatroomsUids import ChatroomsUids
+from opentakserver.models.CoT import CoT
+from opentakserver.models.DataPackage import DataPackage
+from opentakserver.models.DeviceProfiles import DeviceProfiles
+from opentakserver.models.EUD import EUD
+from opentakserver.models.EUDStats import EUDStats
+from opentakserver.models.GeoChat import GeoChat
 from opentakserver.models.Group import Group, GroupTypeEnum
+from opentakserver.models.GroupMission import GroupMission
 from opentakserver.models.Icon import Icon
-from opentakserver.models.role import Role
+from opentakserver.models.Marker import Marker
+from opentakserver.models.Meshtastic import MeshtasticChannel
+from opentakserver.models.Mission import Mission
+from opentakserver.models.MissionChange import MissionChange, generate_mission_change_cot
+from opentakserver.models.MissionContentMission import MissionContentMission
+from opentakserver.models.MissionInvitation import MissionInvitation
+from opentakserver.models.MissionLogEntry import MissionLogEntry
+from opentakserver.models.MissionUID import MissionUID
+from opentakserver.models.Point import Point
+from opentakserver.models.RBLine import RBLine
+from opentakserver.models.Team import Team
+from opentakserver.models.VideoRecording import VideoRecording
+from opentakserver.models.VideoStream import VideoStream
 from opentakserver.models.WebAuthn import WebAuthn
+from opentakserver.models.ZMIST import ZMIST
+from opentakserver.models.CITrap import CITrap
+from opentakserver.models.role import Role
 from opentakserver.PasswordValidator import PasswordValidator
 from opentakserver.plugins.Plugin import Plugin
 from opentakserver.plugins.PluginManager import PluginManager
@@ -86,6 +118,14 @@ def get_timezone():
 def init_extensions(app):
     db.init_app(app)
     Migrate(app, db)
+
+    try:
+        fsqla.FsModels.set_db_info(db)
+    except sqlalchemy.exc.InvalidRequestError:
+        pass
+
+    from opentakserver.models.role import Role
+    from opentakserver.models.user import User
 
     logger.info(f"OpenTAKServer {opentakserver.__version__}")
     logger.info("Loading the database...")
@@ -215,14 +255,6 @@ def init_extensions(app):
     if not apscheduler.running:
         apscheduler.init_app(app)
         apscheduler.start(paused=False)
-
-    try:
-        fsqla.FsModels.set_db_info(db)
-    except sqlalchemy.exc.InvalidRequestError:
-        pass
-
-    from opentakserver.models.role import Role
-    from opentakserver.models.user import User
 
     user_datastore = SQLAlchemyUserDatastore(db, User, Role, WebAuthn)
     app.security = Security(
@@ -517,6 +549,36 @@ def main(app):
             logger.debug("Starting in debug mode")
         else:
             logger.info("Starting in production mode")
+
+        citrap_mission = Mission()
+        citrap_mission.name = "citrap"
+        citrap_mission.tool = "citrap"
+        citrap_mission.default_role = MissionRole.MISSION_SUBSCRIBER
+        citrap_mission.create_time = datetime.now(tz=timezone.utc)
+        citrap_mission.guid = str(uuid.uuid4())
+        citrap_mission.password_protected = False
+
+        try:
+            db.session.add(citrap_mission)
+            db.session.commit()
+        except BaseException as e:
+            db.session.rollback()
+            logger.debug("citrap mission already exits")
+
+        excheck_mission = Mission()
+        excheck_mission.name = "exchecktemplates"
+        excheck_mission.tool = "ExCheck"
+        citrap_mission.default_role = MissionRole.MISSION_SUBSCRIBER
+        citrap_mission.create_time = datetime.now(tz=timezone.utc)
+        citrap_mission.guid = str(uuid.uuid4())
+        citrap_mission.password_protected = False
+
+        try:
+            db.session.add(excheck_mission)
+            db.session.commit()
+        except BaseException as e:
+            db.session.rollback()
+            logger.debug("ExCheck mission already exits")
 
         app.security.datastore.find_or_create_role(
             name="user", permissions={"user-read", "user-write"}

@@ -33,7 +33,7 @@ def administrator_only(f):
     """
     @functools.wraps(f)
     def wrapped(*args, **kwargs):
-        if not (current_user.is_authenticated and current_user.has_role("administrator")):
+        if not current_user.is_authenticated or not current_user.has_role("administrator"):
             logger.debug("Disconnecting {} from {}".format(request.sid, request.namespace))
             disconnect(request.sid, namespace=request.namespace)
         else:

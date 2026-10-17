@@ -28,6 +28,7 @@ class DefaultConfig:
         "CN": {"name": "简化字", "language_code": "zh_Hans"},
         "SE": {"name": "Svenska", "language_code": "sv"},
         "TH": {"name": "ภาษาไทย", "language_code": "th"},
+        "HU": {"name": "Magyar", "language_code": "hu"},
     }
 
     OTS_DATA_FOLDER = os.getenv("OTS_DATA_FOLDER", os.path.join(Path.home(), "ots"))
@@ -40,6 +41,7 @@ class DefaultConfig:
         "1",
         "yes",
     ]
+    OTS_UDP_PORT = int(os.getenv("OTS_UDP_PORT", 8087))
     OTS_TCP_STREAMING_PORT = int(os.getenv("OTS_TCP_STREAMING_PORT", 8088))
     OTS_SSL_STREAMING_PORT = int(os.getenv("OTS_SSL_STREAMING_PORT", 8089))
     OTS_STREAMING_INTERFACE = os.getenv("OTS_STREAMING_INTERFACE", "0.0.0.0")
