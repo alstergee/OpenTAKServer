@@ -186,10 +186,28 @@ class EudHandler(socketserver.BaseRequestHandler):
             return
 
     def finish(self):
-        print("finish")
+        # socketserver always calls finish() after handle(). A client that drops
+        # before its channel opens never reaches on_channel_close, so its
+        # RabbitMQ connection and ioloop thread leaked forever (29 stuck guest
+        # connections from ots_eud_handler, 2026-10-19). Close it here,
+        # thread-safely (the ioloop runs in its own thread).
+        conn = getattr(self, "rabbit_connection", None)
+        if conn is not None and not conn.is_closing and not conn.is_closed:
+            try:
+                conn.ioloop.add_callback_threadsafe(conn.close)
+            except BaseException as e:
+                self.logger.error(f"RabbitMQ close on finish failed: {e}")
 
     def close_connection(self):
         self.logger.info("{} disconnected".format(self.client_address[0]))
+
+        if getattr(self, "rabbit_channel", None) is None:
+            # The channel never opened; finish() closes the connection.
+            if not self.shutdown:
+                self.shutdown = True
+                self.request.shutdown(SHUT_RDWR)
+                self.request.close()
+            return
 
         self.rabbit_channel.basic_publish(
             exchange="cot_parser",

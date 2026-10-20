@@ -465,8 +465,10 @@ class CoTController:
                         )
                         tak_packet.contact.callsign, size = unishox2.compress(from_eud.callsign)
                         tak_packet.chat.message, size = unishox2.compress(remarks.text)
-                        tak_packet.group.team = from_eud.team.name.replace(" ", "_")
-                        tak_packet.group.role = from_eud.team_role.replace(" ", "")
+                        # Web chat (MeshChat) senders have no team or role: default
+                        # them instead of crashing the whole mesh relay (alstergee 2026-10-20).
+                        tak_packet.group.team = (from_eud.team.name if from_eud.team else "Cyan").replace(" ", "_")
+                        tak_packet.group.role = (from_eud.team_role or "Team Member").replace(" ", "")
                         tak_packet.is_compressed = True
 
                         send_meshtastic_text = False
