@@ -135,6 +135,15 @@ class MeshtasticController(RabbitMQClient):
         rk_parts = basic_deliver.routing_key.split(".")
         self._current_mesh_channel = rk_parts[3] if len(rk_parts) >= 5 else None
 
+        # Only Meshtastic envelopes: <root>.2.e.* (protobuf) and <root>.2.json.*
+        # (gateway JSON mode). The rest of amq.topic is not mesh traffic for us:
+        # <root>.2.decoded.* is the portal mesh-decoder's JSON copy of a packet
+        # already received on .2.e (the JSON fallback below handled it a second
+        # time), plus smoke/load tests, gateway heartbeats and self-tests (each
+        # one logged a protobuf parse error).
+        if len(rk_parts) < 3 or rk_parts[1] != "2" or rk_parts[2] not in ("e", "json"):
+            return
+
         # >>> pipeline_trace step 20: decode.consume <<<
         try:
             _pt_trace("decode.consume",
