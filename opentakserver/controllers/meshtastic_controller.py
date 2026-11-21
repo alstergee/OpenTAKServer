@@ -18,7 +18,7 @@ from xml.etree.ElementTree import Element, SubElement, tostring
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 
-from opentakserver.controllers.rabbitmq_client import RabbitMQClient
+from opentakserver.rabbitmq_client import RabbitMQClient
 from opentakserver.models.EUD import EUD
 from opentakserver.models.GeoChat import GeoChat
 from opentakserver.models.Chatrooms import Chatroom
