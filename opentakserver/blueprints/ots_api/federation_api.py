@@ -1,6 +1,7 @@
 import datetime
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import traceback
@@ -45,8 +46,8 @@ from opentakserver.certificate_authority import CertificateAuthority
 federation_blueprint = Blueprint("federation_blueprint", __name__)
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation/token")
+@roles_required("administrator")
 def get_tokens():
     """
     Get a list of tokens. All URL parameters are optional
@@ -71,8 +72,8 @@ def get_tokens():
     return paginate(query, FederateToken)
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation/token", methods=["POST"])
+@roles_required("administrator")
 def create_token():
     """
     Creates a new federation token and saves it to the database.
@@ -124,8 +125,8 @@ def create_token():
         return jsonify({"success": True, "token": fed_token.to_json()})
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation")
+@roles_required("administrator")
 def get_federations():
     """
     Gets a list of federation connections
@@ -149,8 +150,8 @@ def get_federations():
     return paginate(query, FederationConnection)
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation/all")
+@roles_required("administrator")
 def get_all_federations():
     """
     Gets a list of all federation connections
@@ -167,8 +168,8 @@ def get_all_federations():
     return jsonify({"success": True, "results": return_value})
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation", methods=["POST"])
+@roles_required("administrator")
 def create_federation():
     """
     Creates a new federation connection
@@ -214,8 +215,8 @@ def create_federation():
     return jsonify({"success": True}), 200
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation", methods=["DELETE"])
+@roles_required("administrator")
 def delete_federation():
     """
     Delete a federation connection
@@ -239,8 +240,8 @@ def delete_federation():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation", methods=["PATCH"])
+@roles_required("administrator")
 def edit_federation():
     """
     Edits a federation connection
@@ -317,8 +318,8 @@ def edit_federation():
         )
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation/certificate")
+@roles_required("administrator")
 def get_federation_certificate():
     """
     Download the federation cert needed by the server you're federating to
@@ -334,8 +335,8 @@ def get_federation_certificate():
     )
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation/certificate", methods=["PATCH"])
+@roles_required("administrator")
 def regenerate_federation_certificate():
     """
     Regenerates the federation certificate. <b>THIS WILL DELETE THE OLD FEDERATION CERTIFICATE!</b> You will need to re-upload
@@ -349,6 +350,10 @@ def regenerate_federation_certificate():
     """
 
     common_name = request.json.get("common_name", "federation")
+
+    # issue_certificate() builds shell commands and file paths from the common name.
+    if not isinstance(common_name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", common_name):
+        return jsonify({"success": False, "error": gettext("Invalid common name")}), 400
 
     try:
         certificate_authority = CertificateAuthority(logger, app)
@@ -366,8 +371,8 @@ def regenerate_federation_certificate():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation/federate")
+@roles_required("administrator")
 def get_federates():
     query = db.session.query(Federate)
     query = search(query, Federate, "name")
@@ -378,8 +383,8 @@ def get_federates():
     return paginate(query, Federate)
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation/federate/all")
+@roles_required("administrator")
 def get_all_federates():
     federates = db.session.execute(db.session.query(Federate)).scalars()
     return_value = []
@@ -390,8 +395,8 @@ def get_all_federates():
     return jsonify({"success": True, "results": return_value})
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation/federate", methods=["DELETE"])
+@roles_required("administrator")
 def delete_federate():
     """
     Deletes a federate certificate
@@ -428,8 +433,8 @@ def delete_federate():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation/federate", methods=["POST"])
+@roles_required("administrator")
 def add_federate():
     """
     Adds a federate certificate
@@ -509,8 +514,8 @@ def add_federate():
         return jsonify({"success": False, "error": form.errors}), 400
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation/certificate", methods=["POST"])
+@roles_required("administrator")
 def upload_federation_certificate():
     """
     Uploads a new federate certificate and parses its metadata
@@ -584,8 +589,8 @@ def upload_federation_certificate():
     )
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation/groups", methods=["GET"])
+@roles_required("administrator")
 def get_federation_groups():
     """Returns a list of groups that the federation connection will forward data for
     :parameter: federation_id
@@ -613,8 +618,8 @@ def get_federation_groups():
     return jsonify({"success": True, "groups": groups})
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation/groups", methods=["PUT"])
+@roles_required("administrator")
 def add_federation_to_groups():
     # TODO: LDAP
     groups = request.json.get("groups")
@@ -664,8 +669,8 @@ def add_federation_to_groups():
     return jsonify({"success": True})
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation/groups", methods=["DELETE"])
+@roles_required("administrator")
 def remove_federation_groups():
     federation_id = request.args.get("federation_id")
     group_id = request.args.get("group_id")
@@ -721,8 +726,8 @@ def remove_federation_groups():
     return jsonify({"success": True})
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation/federate_groups")
+@roles_required("administrator")
 def get_federate_groups():
     federation_id = request.args.get("federation_id")
 
@@ -745,8 +750,8 @@ def get_federate_groups():
     return jsonify({"success": True, "results": return_value})
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation/group_mapping")
+@roles_required("administrator")
 def get_federate_group_mappings():
     federation_id = request.args.get("federation_id")
 
@@ -769,8 +774,8 @@ def get_federate_group_mappings():
     return jsonify({"success": True, "results": return_value})
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation/group_mapping", methods=["POST"])
+@roles_required("administrator")
 def create_federate_group_mapping():
     federate_group_id = request.json.get("federate_group_id")
     group_id = request.json.get("group_id")
@@ -820,8 +825,8 @@ def create_federate_group_mapping():
     return jsonify({"success": True})
 
 
-@roles_required("administrator")
 @federation_blueprint.route("/api/federation/group_mapping", methods=["DELETE"])
+@roles_required("administrator")
 def delete_federate_group_mapping():
     federate_group_id = request.args.get("federate_group_id")
     group_id = request.args.get("group_id")
