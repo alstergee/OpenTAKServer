@@ -213,6 +213,10 @@ def init_extensions(app):
         },
         supports_credentials=True,
     )
+    # Upstream e640ac0 dropped this (and set WTF_CSRF_ENABLED = False), which
+    # leaves Flask-Security with no CSRF check at all: it only enforces
+    # SECURITY_CSRF_PROTECT_MECHANISMS through an initialised CSRFProtect.
+    flask_wtf.CSRFProtect(app)
 
     socketio_logger = False
     if app.config.get("DEBUG"):
@@ -415,6 +419,8 @@ def create_app(cli=True):
             )
             db.init_app(app)
             Migrate(app, db)
+
+        flask_wtf.CSRFProtect(app)
 
         try:
             fsqla.FsModels.set_db_info(db)
