@@ -54,7 +54,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, Flask, send_from_directory
+from flask import Blueprint, Flask, jsonify, send_from_directory
+from flask_security import current_user
 
 from opentakserver.sdk.manifest import (
     BackgroundWorkerMount,
@@ -101,6 +102,14 @@ _BLUEPRINT_MOUNT_TYPES = (
 # Plugin-context wrapper
 # ---------------------------------------------------------------------------
 
+
+
+
+def _require_signed_in() -> Any:
+    """before_request for every v2 plugin blueprint: 401 unless a user is signed in."""
+    if not current_user or not current_user.is_authenticated:
+        return jsonify({'success': False, 'error': 'Sign in required.'}), 401
+    return None
 
 def _with_plugin_context(
     manifest: PluginManifest,
@@ -427,6 +436,11 @@ class PluginManagerV2:
         # blueprint has no routes (no UI/webhook mounts).
         if blueprint.deferred_functions:
             url_prefix = f'/api/plugins/{slug}'
+            # Every v2 plugin route needs a signed-in user, whatever the plugin itself remembers to
+            # check (2026-11-21: the UI pages were served to anyone, and plugin authors had stacked
+            # @roles_accepted above @route, which silently disables it). Plugins still add their own
+            # role checks; this is the floor, not the policy.
+            blueprint.before_request(_require_signed_in)
             try:
                 self._app.register_blueprint(blueprint, url_prefix=url_prefix)
             except (ValueError, AssertionError) as exc:
